@@ -1,0 +1,135 @@
+#! /bin/bash
+
+# Take ZFS snapshots and remove the latest
+
+help="zfs-snapper
+-p, --pool POOL|FILESYSTEM	ZFS pool/filesystem name (def. all in 'zpool list')
+-m, --max_snaps INTEGER	    Max. number of snapshots to keep (def. 5)
+-l, --label STRING          Arbitrary string to label hourly, weekly, ... snapshots
+--pre_script SCRIPT         A command or script to execute before the snapshot
+--post-script SCRIPT        A command or script to execute after the snapshot
+--log                       Print logs to /tmp/zfs-snapper/SNAPSHOT_NAME
+
+Examples:
+  zfs-snapper -p zpool/my_data -m 5 -l daily
+  zfs-snapper -p zpool --pre_script stop_services.sh --post_script restart_services.sh --log
+
+Without arguments it will take a maximum of 5 snapshots of all available ZFS pools.
+The label can be used to keep N copies of each type of job (hourly, daily...).
+Author: julen.larrucea@ifam.fraunhofer.de
+"
+
+# Parse (optional) command line arguments
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    -m|--max_snaps)
+    export max_snaps="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    -p|--pool)
+    export zpools="$2"
+    shift
+    shift
+    ;;
+    -l|--label)
+    export label="$2"
+    shift
+    shift
+    ;;
+    --pre_script)
+    export pre_script="$2"
+    shift
+    shift
+    ;;
+    --post_script)
+    export post_script="$2"
+    shift
+    shift
+    ;;
+    --log)
+    export log=true
+    shift
+    ;;
+    -h|--help)
+    echo "$help"
+    exit 0
+    shift
+    ;;
+    *)   
+    POSITIONAL+=("$1") # save it in an array for later
+    shift 
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+
+export max_snaps=${max_snaps:-5}
+export zpools=${zpools:-$(zpool list -Ho name)}
+begin_time=$(date +%s)
+
+# Create directory for logs
+mkdir -p /tmp/zfs-snapper
+
+purge_old () {
+  # Keeps last $max_snaps snapshots and deletes the rest
+  max_s=$((max_snapshots+1))
+  rm_snaps=$(zfs list -t snapshot -Ho name -r $pool |grep "$pool@" |grep "[.]$label"'$' |tac | sed -n "$max_s,$ p")
+
+  if ! [ -z $log ]; then
+    echo "$log_path"
+    echo ' ## Removing the following old snapshots:' >> $log_path 
+    echo "$rm_snapshots" >> $log_path
+    echo >> $log_path
+  fi
+
+  for old in $rm_snapshots
+    do
+      zfs destroy $old
+    done
+}
+
+run_script () {
+  # Usage: run_script SCRIPT_FILE|COMMAND
+  script=$1
+  if [ -f $script ];then
+    $script &>> ${log_path}
+  else
+    eval $script &>> ${log_path}
+  fi
+}
+
+
+format_elapsed() {
+ ((h=${1}/3600))
+ ((m=(${1}%3600)/60))
+ ((s=${1}%60))
+ printf "%02d:%02d:%02d\n" $h $m $s
+}
+
+
+for pool in $zpools
+  do
+    timestamp=$(date +%F_%H.%M.%S)
+    snap_name=${pool}@${timestamp}.${label}
+    export log_path=/tmp/zfs-snapper/${snap_name/\//__}
+    rm -f $log_path
+    touch $log_path
+    run_script $pre_script $snap_name
+    zfs snapshot ${snap_name}
+    purge_old
+    run_script $post_script $snap_name
+    # If outputfile is empty, delete it
+    if ! [ -z $log ]; then
+      end_time=$(date +%s)
+      elapsed=$(( end_time - begin_time ))
+      elapsed=$(format_elapsed $elapsed)
+      echo "Elapsed time: $elapsed" >> $log_path
+    fi
+    [ -s $log_path ] || rm -f $log_path
+  done
