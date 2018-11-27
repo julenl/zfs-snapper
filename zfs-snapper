@@ -1,6 +1,7 @@
 #! /bin/bash
 
 # Take ZFS snapshots and remove the latest
+version=1.1
 
 help="zfs-snapper
 -p, --pool POOL|FILESYSTEM	ZFS pool/filesystem name (def. all in 'zpool list')
@@ -9,6 +10,7 @@ help="zfs-snapper
 --pre_script SCRIPT         A command or script to execute before the snapshot
 --post-script SCRIPT        A command or script to execute after the snapshot
 --log                       Print logs to /tmp/zfs-snapper/SNAPSHOT_NAME
+-v, --version               Print version and exit   
 
 Examples:
   zfs-snapper -p zpool/my_data -m 5 -l daily
@@ -55,6 +57,11 @@ case $key in
     export log=true
     shift
     ;;
+    -v|--version)
+    echo "zfs-snapper version: $version"
+    exit 0
+    shift
+    ;;
     -h|--help)
     echo "$help"
     exit 0
@@ -78,17 +85,18 @@ mkdir -p /tmp/zfs-snapper
 
 purge_old () {
   # Keeps last $max_snaps snapshots and deletes the rest
-  max_s=$((max_snapshots+1))
+  #max_s=$((max_snapshots+1))
+  max_s=$((max_snaps+1))
   rm_snaps=$(zfs list -t snapshot -Ho name -r $pool |grep "$pool@" |grep "[.]$label"'$' |tac | sed -n "$max_s,$ p")
 
   if ! [ -z $log ]; then
     echo "$log_path"
     echo ' ## Removing the following old snapshots:' >> $log_path 
-    echo "$rm_snapshots" >> $log_path
+    echo "$rm_snaps" >> $log_path
     echo >> $log_path
   fi
 
-  for old in $rm_snapshots
+  for old in $rm_snaps
     do
       zfs destroy $old
     done
@@ -120,10 +128,14 @@ for pool in $zpools
     export log_path=/tmp/zfs-snapper/${snap_name/\//__}
     rm -f $log_path
     touch $log_path
-    run_script $pre_script $snap_name
+    if ! [ -z $pre_script ]; then
+      run_script $pre_script $snap_name
+    fi
     zfs snapshot ${snap_name}
     purge_old
-    run_script $post_script $snap_name
+    if ! [ -z $post_script ]; then
+      run_script $post_script $snap_name
+    fi
     # If outputfile is empty, delete it
     if ! [ -z $log ]; then
       end_time=$(date +%s)
